@@ -6,10 +6,13 @@ Repo: `https://github.com/NYN-05/Gray_Mobility_TASK_1`
 
 ## How it works
 
-Every POST /identify request follows this decision flow to link contacts:
+Every POST /identify request follows this decision flow to link contacts (inputs are normalized: email → trimmed + lowercased, phone → trimmed):
 
 ```
 Receive { email, phoneNumber }
+        │
+        ▼
+Normalize inputs (trim, lowercase email)
         │
         ▼
 Query database WHERE email OR phone matches

@@ -8,9 +8,11 @@ datasource db {
 }
 
 model Contact {
+  /// A contact may have either identifier, but reconciliation requires at least one at the API layer.
   id              Int       @id @default(autoincrement())
   phoneNumber     String?
   email           String?
+  /// Secondary records reference their group's primary record; primaries keep this value null.
   linkedId        Int?
   linkPrecedence  String    @default("primary")
   createdAt       DateTime  @default(now())
@@ -20,5 +22,9 @@ model Contact {
   linkedContact Contact?  @relation("ContactLink", fields: [linkedId], references: [id])
   contacts       Contact[] @relation("ContactLink")
 
+  // Support active-contact lookups by identifier and primary group.
+  @@index([email, deletedAt])
+  @@index([phoneNumber, deletedAt])
+  @@index([linkedId, deletedAt])
   @@map("Contact")
 }

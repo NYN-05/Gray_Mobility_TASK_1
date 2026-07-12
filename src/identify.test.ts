@@ -1,183 +1,75 @@
 import request from 'supertest';
 import { PrismaClient } from '@prisma/client';
-import { app } from './app';
+import { app, prisma as appPrisma } from './app';
 
 const prisma = new PrismaClient();
+const api = (body: any) => request(app).post('/identify').send(body);
 
-/** Clean the database before each test to ensure isolation */
-beforeEach(async () => {
-  await prisma.contact.deleteMany();
-});
-
-/** Clean up and disconnect Prisma after all tests */
+beforeEach(async () => { await prisma.contact.deleteMany(); });
 afterAll(async () => {
   await prisma.contact.deleteMany();
-  await prisma.$disconnect();
+  await Promise.all([prisma.$disconnect(), appPrisma.$disconnect()]);
 });
 
+function exp({ status, body: { contact } }: request.Response, id: any, emails: string[], phones: string[], sc?: number) {
+  expect(status).toBe(200);
+  expect(contact.primaryContactId).toEqual(id);
+  expect(contact.emails).toEqual(emails);
+  expect(contact.phoneNumbers).toEqual(phones);
+  if (sc !== undefined) expect(contact.secondaryContactIds).toHaveLength(sc);
+}
+
+async function primary() {
+  return (await api({ email: 'a@gmail.com', phoneNumber: '111' })).body.contact.primaryContactId;
+}
+
 describe('POST /identify', () => {
-  /** Scenario 1: Completely new email and phone → creates a primary contact */
-  it('creates a primary contact when no matches exist', async () => {
-    const res = await request(app)
-      .post('/identify')
-      .send({ email: 'a@gmail.com', phoneNumber: '111' });
-
-    expect(res.status).toBe(200);
-    expect(res.body.contact.primaryContactId).toBeDefined();
-    expect(res.body.contact.emails).toEqual(['a@gmail.com']);
-    expect(res.body.contact.phoneNumbers).toEqual(['111']);
-    expect(res.body.contact.secondaryContactIds).toEqual([]);
+  it('creates primary when no match exists', async () => {
+    exp(await api({ email: 'a@gmail.com', phoneNumber: '111' }), expect.any(Number), ['a@gmail.com'], ['111'], 0);
   });
 
-  /** Scenario 2: Email matches existing, phone is new → creates secondary */
-  it('creates a secondary contact when email matches and phone is new', async () => {
-    const res1 = await request(app)
-      .post('/identify')
-      .send({ email: 'a@gmail.com', phoneNumber: '111' });
-    const primaryId = res1.body.contact.primaryContactId;
-
-    const res2 = await request(app)
-      .post('/identify')
-      .send({ email: 'a@gmail.com', phoneNumber: '222' });
-
-    expect(res2.status).toBe(200);
-    expect(res2.body.contact.primaryContactId).toBe(primaryId);
-    expect(res2.body.contact.emails).toEqual(['a@gmail.com']);
-    expect(res2.body.contact.phoneNumbers).toEqual(['111', '222']);
-    expect(res2.body.contact.secondaryContactIds).toHaveLength(1);
+  it('creates secondary when email matches and phone is new', async () => {
+    const pid = await primary();
+    exp(await api({ email: 'a@gmail.com', phoneNumber: '222' }), pid, ['a@gmail.com'], ['111', '222'], 1);
   });
 
-  /** Scenario 3: Phone matches existing, email is new → creates secondary */
-  it('creates a secondary contact when phone matches and email is new', async () => {
-    const res1 = await request(app)
-      .post('/identify')
-      .send({ email: 'a@gmail.com', phoneNumber: '111' });
-    const primaryId = res1.body.contact.primaryContactId;
-
-    await request(app)
-      .post('/identify')
-      .send({ email: 'a@gmail.com', phoneNumber: '222' });
-
-    const res3 = await request(app)
-      .post('/identify')
-      .send({ email: 'b@gmail.com', phoneNumber: '222' });
-
-    expect(res3.status).toBe(200);
-    expect(res3.body.contact.primaryContactId).toBe(primaryId);
-    expect(res3.body.contact.emails).toEqual(['a@gmail.com', 'b@gmail.com']);
-    expect(res3.body.contact.phoneNumbers).toEqual(['111', '222']);
-    expect(res3.body.contact.secondaryContactIds).toHaveLength(2);
+  it('creates secondary when phone matches and email is new', async () => {
+    const pid = await primary();
+    await api({ email: 'a@gmail.com', phoneNumber: '222' });
+    exp(await api({ email: 'b@gmail.com', phoneNumber: '222' }), pid, ['a@gmail.com', 'b@gmail.com'], ['111', '222'], 2);
   });
 
-  /** Scenario 4: Both email and phone already exist in the group → no new entry */
-  it('returns existing group when both fields already exist', async () => {
-    const res1 = await request(app)
-      .post('/identify')
-      .send({ email: 'a@gmail.com', phoneNumber: '111' });
-    const primaryId = res1.body.contact.primaryContactId;
-
-    await request(app)
-      .post('/identify')
-      .send({ email: 'a@gmail.com', phoneNumber: '222' });
-
-    const res3 = await request(app)
-      .post('/identify')
-      .send({ email: 'a@gmail.com', phoneNumber: '111' });
-
-    expect(res3.status).toBe(200);
-    expect(res3.body.contact.primaryContactId).toBe(primaryId);
-    expect(res3.body.contact.secondaryContactIds).toHaveLength(1);
+  it('returns existing group when info already exists', async () => {
+    const pid = await primary();
+    await api({ email: 'a@gmail.com', phoneNumber: '222' });
+    exp(await api({ email: 'a@gmail.com', phoneNumber: '111' }), pid, ['a@gmail.com'], ['111', '222'], 1);
   });
 
-  /**
-   * Scenario 5: Hardest case — request connects two separate primary groups.
-   * The newer primary should be demoted to secondary.
-   */
   it('merges two primary groups when request links them', async () => {
-    const res1 = await request(app)
-      .post('/identify')
-      .send({ email: 'a@gmail.com', phoneNumber: '111' });
-    const primaryIdA = res1.body.contact.primaryContactId;
-
-    await request(app)
-      .post('/identify')
-      .send({ email: 'b@gmail.com', phoneNumber: '222' });
-
-    const res3 = await request(app)
-      .post('/identify')
-      .send({ email: 'a@gmail.com', phoneNumber: '222' });
-
-    expect(res3.status).toBe(200);
-    expect(res3.body.contact.primaryContactId).toBe(primaryIdA);
-    expect(res3.body.contact.emails).toEqual(['a@gmail.com', 'b@gmail.com']);
-    expect(res3.body.contact.phoneNumbers).toEqual(['111', '222']);
-    expect(res3.body.contact.secondaryContactIds).toHaveLength(1);
+    const pid = await primary();
+    await api({ email: 'b@gmail.com', phoneNumber: '222' });
+    exp(await api({ email: 'a@gmail.com', phoneNumber: '222' }), pid, ['a@gmail.com', 'b@gmail.com'], ['111', '222'], 1);
   });
 
-  /**
-   * Scenario 6: Merge where the demoted primary already has secondaries.
-   * All secondaries must be repointed to the surviving primary.
-   */
-  it('repoints secondaries of demoted primary during merge', async () => {
-    const res1 = await request(app)
-      .post('/identify')
-      .send({ email: 'a@gmail.com', phoneNumber: '111' });
-    const primaryIdA = res1.body.contact.primaryContactId;
-
-    await request(app)
-      .post('/identify')
-      .send({ email: 'b@gmail.com', phoneNumber: '222' });
-
-    await request(app)
-      .post('/identify')
-      .send({ email: 'c@gmail.com', phoneNumber: '333' });
-
-    /* This links C(primary) with B(primary) via phone — C merges into B */
-    await request(app)
-      .post('/identify')
-      .send({ email: 'c@gmail.com', phoneNumber: '222' });
-
-    /* This links A(primary) with B's group via C's phone — B's group merges into A */
-    const res5 = await request(app)
-      .post('/identify')
-      .send({ email: 'a@gmail.com', phoneNumber: '333' });
-
-    expect(res5.status).toBe(200);
-    expect(res5.body.contact.primaryContactId).toBe(primaryIdA);
-    expect(res5.body.contact.emails).toEqual(['a@gmail.com', 'b@gmail.com', 'c@gmail.com']);
-    expect(res5.body.contact.phoneNumbers).toEqual(['111', '222', '333']);
-    expect(res5.body.contact.secondaryContactIds).toHaveLength(2);
+  it('repoints secondaries during merge', async () => {
+    const pid = await primary();
+    await api({ email: 'b@gmail.com', phoneNumber: '222' });
+    await api({ email: 'c@gmail.com', phoneNumber: '333' });
+    await api({ email: 'c@gmail.com', phoneNumber: '222' });
+    exp(await api({ email: 'a@gmail.com', phoneNumber: '333' }), pid, ['a@gmail.com', 'b@gmail.com', 'c@gmail.com'], ['111', '222', '333'], 2);
   });
 
-  /** Edge case: Missing both fields should return 400 */
-  it('returns 400 when both email and phoneNumber are missing', async () => {
-    const res = await request(app)
-      .post('/identify')
-      .send({});
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe('email or phoneNumber is required');
+  it('returns 400 when email and phone missing', async () => {
+    const r = await api({});
+    expect(r.status).toBe(400);
+    expect(r.body.error).toBe('email or phoneNumber is required');
   });
 
-  /** Edge case: Only email provided */
   it('creates contact with only email', async () => {
-    const res = await request(app)
-      .post('/identify')
-      .send({ email: 'only@email.com' });
-
-    expect(res.status).toBe(200);
-    expect(res.body.contact.emails).toEqual(['only@email.com']);
-    expect(res.body.contact.phoneNumbers).toEqual([]);
+    exp(await api({ email: 'only@email.com' }), expect.any(Number), ['only@email.com'], [], 0);
   });
 
-  /** Edge case: Only phoneNumber provided */
-  it('creates contact with only phoneNumber', async () => {
-    const res = await request(app)
-      .post('/identify')
-      .send({ phoneNumber: '9999999999' });
-
-    expect(res.status).toBe(200);
-    expect(res.body.contact.phoneNumbers).toEqual(['9999999999']);
-    expect(res.body.contact.emails).toEqual([]);
+  it('creates contact with only phone', async () => {
+    exp(await api({ phoneNumber: '9999999999' }), expect.any(Number), [], ['9999999999'], 0);
   });
 });
