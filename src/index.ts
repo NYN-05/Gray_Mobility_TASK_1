@@ -1,9 +1,9 @@
 import { app } from './app';
 
-// Keep the port configurable for local development and deployment environments.
+// Port configurable via env for local dev and deployment flexibility.
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
-// The app is defined separately in app.ts so tests do not need to open a network port.
+// App is defined separately in app.ts so tests can import it without opening a port.
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });

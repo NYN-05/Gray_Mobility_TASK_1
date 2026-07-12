@@ -5,12 +5,14 @@ import { app, prisma as appPrisma } from './app';
 const prisma = new PrismaClient();
 const api = (body: any) => request(app).post('/identify').send(body);
 
+// Clean slate before each test, disconnect clients after all tests.
 beforeEach(async () => { await prisma.contact.deleteMany(); });
 afterAll(async () => {
   await prisma.contact.deleteMany();
   await Promise.all([prisma.$disconnect(), appPrisma.$disconnect()]);
 });
 
+/** Assert response matches expected identity group. sc = expected secondary count (optional). */
 function exp({ status, body: { contact } }: request.Response, id: any, emails: string[], phones: string[], sc?: number) {
   expect(status).toBe(200);
   expect(contact.primaryContactId).toEqual(id);
@@ -19,6 +21,7 @@ function exp({ status, body: { contact } }: request.Response, id: any, emails: s
   if (sc !== undefined) expect(contact.secondaryContactIds).toHaveLength(sc);
 }
 
+/** Create and return the primary contact ID used as baseline for subsequent tests. */
 async function primary() {
   return (await api({ email: 'a@gmail.com', phoneNumber: '111' })).body.contact.primaryContactId;
 }
@@ -45,12 +48,14 @@ describe('POST /identify', () => {
     exp(await api({ email: 'a@gmail.com', phoneNumber: '111' }), pid, ['a@gmail.com'], ['111', '222'], 1);
   });
 
+  // Request connects two separate primary groups → newer primary must be demoted.
   it('merges two primary groups when request links them', async () => {
     const pid = await primary();
     await api({ email: 'b@gmail.com', phoneNumber: '222' });
     exp(await api({ email: 'a@gmail.com', phoneNumber: '222' }), pid, ['a@gmail.com', 'b@gmail.com'], ['111', '222'], 1);
   });
 
+  // Demoted primary already has secondaries that must be repointed to the survivor.
   it('repoints secondaries during merge', async () => {
     const pid = await primary();
     await api({ email: 'b@gmail.com', phoneNumber: '222' });
