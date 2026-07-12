@@ -1,28 +1,31 @@
 # Identity Reconciliation
 
-A backend service that deduplicates customer contact information across orders. Built for the Bitespeed Backend Assignment.
+A backend service that deduplicates customer contact information across orders using a primary-secondary contact model.
+
+Repo: `https://github.com/NYN-05/Gray_Mobility_TASK_1`
 
 ## How it works
 
-When a customer places orders using different emails or phone numbers, this service links them to a single contact profile using a primary-secondary contact model.
-
-### Decision flow
+Every POST /identify request follows this decision flow to link contacts:
 
 ```
-Receive email + phone
+Receive { email, phoneNumber }
         │
         ▼
-Search database by email OR phone
+Query database WHERE email OR phone matches
         │
-        ├── No match? → Create PRIMARY contact
+        ├── No match → Create PRIMARY contact, return
         │
-        └── Match found?
+        └── Match found
                 │
-                ├── One group, new info? → Create SECONDARY contact
+                ├── One identity group, new info?
+                │   → Create SECONDARY contact under the primary
                 │
-                ├── Two+ primary groups? → Merge (demote newer → secondary)
+                ├── Two+ identity groups connected?
+                │   → Merge: demote newer primaries → secondary,
+                │     repoint all their secondaries to the oldest primary
                 │
-                └── Return consolidated contact
+                └── No new info → Return existing consolidated group
 ```
 
 ## Tech Stack
@@ -36,35 +39,34 @@ Search database by email OR phone
 | ORM       | Prisma |
 | Testing   | Jest + Supertest |
 
-## Prerequisites
-
-- **Node.js** v18+
-- **PostgreSQL** 14+ running locally
-- **npm**
-
 ## Setup
+
+### Prerequisites
+
+- Node.js v18+
+- PostgreSQL 14+ running locally
+- npm
 
 ### 1. Clone and install
 
 ```bash
-git clone <repo-url>
-cd identity-reconciliation
+git clone https://github.com/NYN-05/Gray_Mobility_TASK_1.git
+cd Gray_Mobility_TASK_1
 npm install
 ```
 
 ### 2. Configure database
 
-Update `.env` with your PostgreSQL connection string:
+Create a PostgreSQL database and update `.env`:
 
 ```
 DATABASE_URL="postgresql://postgres:postgres@localhost:5432/identity_reconciliation"
 PORT=3000
 ```
 
-### 3. Create database and run migrations
+### 3. Run migrations
 
 ```bash
-createdb identity_reconciliation
 npx prisma migrate dev --name init
 ```
 
@@ -75,7 +77,7 @@ npm run build
 npm start
 ```
 
-Server starts on `http://localhost:3000`.
+Server runs at `http://localhost:3000`.
 
 ## API
 
@@ -103,15 +105,23 @@ Server starts on `http://localhost:3000`.
 }
 ```
 
+**Error (400) — both fields missing:**
+
+```json
+{
+  "error": "email or phoneNumber is required"
+}
+```
+
 ## Testing
 
 ```bash
 npm test
 ```
 
-Runs 9 test cases covering:
+9 test cases covering:
 - Primary contact creation (no matches)
-- Secondary contact creation (new email or phone)
+- Secondary creation (new email or phone)
 - No-op when all info already exists
 - Merging two primary groups
 - Repointing secondaries during merge
@@ -122,12 +132,12 @@ Runs 9 test cases covering:
 
 ```
 Contact
-  id              Int          (PK, auto-increment)
-  phoneNumber     String?      (nullable)
-  email           String?      (nullable)
-  linkedId        Int?         (FK to primary contact, nullable)
-  linkPrecedence  String       ("primary" | "secondary")
+  id              Int        (PK, auto-increment)
+  phoneNumber     String?    (nullable)
+  email           String?    (nullable)
+  linkedId        Int?       (FK → Contact.id, nullable)
+  linkPrecedence  String     ("primary" | "secondary")
   createdAt       DateTime
   updatedAt       DateTime
-  deletedAt       DateTime?    (nullable, soft-delete)
+  deletedAt       DateTime?  (nullable, soft-delete)
 ```
